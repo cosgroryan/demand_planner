@@ -241,21 +241,64 @@ def main():
     st.sidebar.markdown("**Format**: `100275` (Parent SKU only)")
     st.sidebar.markdown("**The system will aggregate all child SKUs under this parent.**")
     
-    # Parent SKU selection
-    selected_parent_sku = st.sidebar.selectbox(
-        "Select Parent SKU",
-        available_parent_skus,
-        index=st.session_state.selected_sku_index if st.session_state.selected_sku_index < len(available_parent_skus) else 0,
-        key="parent_sku_selectbox"
+    # Parent SKU input method selection
+    input_method = st.sidebar.radio(
+        "Choose input method:",
+        ["📝 Manual Entry", "📋 Select from List"],
+        horizontal=True
     )
     
-    # Update session state when selection changes
-    if selected_parent_sku:
-        st.session_state.selected_sku_index = available_parent_skus.index(selected_parent_sku)
+    if input_method == "📝 Manual Entry":
+        # Manual text input
+        selected_parent_sku = st.sidebar.text_input(
+            "Enter Parent SKU",
+            value=st.session_state.get("manual_sku", ""),
+            placeholder="e.g., 100275",
+            help="Enter a parent SKU manually (6 digits)",
+            key="manual_sku_input"
+        )
+        
+        # Store in session state
+        if selected_parent_sku:
+            st.session_state.manual_sku = selected_parent_sku
+            
+        # Validate format
+        if selected_parent_sku and not selected_parent_sku.isdigit():
+            st.sidebar.warning("⚠️ Parent SKU should be numeric (e.g., 100275)")
+        elif selected_parent_sku and len(selected_parent_sku) != 6:
+            st.sidebar.warning("⚠️ Parent SKU should be 6 digits (e.g., 100275)")
+        
+        # Show popular SKUs for quick selection
+        if not selected_parent_sku:
+            st.sidebar.markdown("**💡 Popular Parent SKUs:**")
+            popular_skus = available_parent_skus[:5]  # Show first 5
+            for sku in popular_skus:
+                if st.sidebar.button(f"📌 {sku}", key=f"quick_select_{sku}"):
+                    st.session_state.manual_sku = sku
+                    st.rerun()
+            
+    else:
+        # Dropdown selection
+        selected_parent_sku = st.sidebar.selectbox(
+            "Select Parent SKU",
+            available_parent_skus,
+            index=st.session_state.selected_sku_index if st.session_state.selected_sku_index < len(available_parent_skus) else 0,
+            key="parent_sku_selectbox"
+        )
+        
+        # Update session state when selection changes
+        if selected_parent_sku:
+            st.session_state.selected_sku_index = available_parent_skus.index(selected_parent_sku)
     
     # Display parent SKU info
     if selected_parent_sku:
         st.sidebar.success(f"Selected Parent SKU: {selected_parent_sku}")
+        
+        # Show quick stats if available
+        if selected_parent_sku in available_parent_skus:
+            st.sidebar.info("✅ This SKU has historical data available")
+        else:
+            st.sidebar.warning("⚠️ This SKU may not have historical data")
     
     # Forecast parameters
     st.sidebar.markdown("### ⚙️ Forecast Parameters")

@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "demand-planner"
+version = "0.1.0"
+description = "Modern demand planning system for retail sales forecasting"
+authors = [
+    {name = "Ryan Cosgrove", email = "ryan@example.com"},
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Core data processing
+    "polars>=0.20.0",
+    "duckdb>=0.9.0",
+    "pyarrow>=14.0.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    # API
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "orjson>=3.9.0",
+    # Forecasting
+    "statsmodels>=0.14.0",
+    "scikit-learn>=1.3.0",
+    # Visualization
+    "plotly>=5.17.0",
+    "matplotlib>=3.7.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "typer>=0.9.0",
+    "rich>=13.7.0",
+    "joblib>=1.3.0",
+    "streamlit>=1.50.0",
+    "requests>=2.32.5",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+forecast = [
+    "pmdarima>=2.0.0",
+]
+
+[tool.uv.extra-build-dependencies]
+pmdarima = ["numpy", "scipy", "pandas"]
+
+[project.scripts]
+dp = "dp.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dp"]

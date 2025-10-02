@@ -701,7 +701,7 @@ def main():
             "Upper Bound": [interval[1] for interval in forecast_data.get("prediction_intervals", [])]
         })
         
-        st.dataframe(forecast_df, use_container_width=True)
+        st.dataframe(forecast_df, width='stretch')
         
         # Model information
         st.markdown("### 🤖 Model Information")

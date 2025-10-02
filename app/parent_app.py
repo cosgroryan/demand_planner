@@ -391,7 +391,7 @@ def main():
             'Forecast Sales ($)': forecast_data['forecast_sales']
         })
         
-        st.dataframe(forecast_df, use_container_width=True)
+        st.dataframe(forecast_df, width='stretch')
         
         # Download button
         csv = forecast_df.to_csv(index=False)

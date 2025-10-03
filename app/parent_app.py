@@ -42,10 +42,10 @@ def get_available_parent_skus() -> List[str]:
         pass
     return []
 
-def get_parent_series_data(parent_sku: str, limit: int = 52) -> Optional[Dict]:
+def get_parent_series_data(parent_sku: str, limit: int = 52, include_prebook: bool = True) -> Optional[Dict]:
     """Get historical data for a parent SKU."""
     try:
-        params = {"limit": limit}
+        params = {"limit": limit, "include_prebook": include_prebook}
         response = requests.get(f"{API_BASE_URL}/parent-sku/{parent_sku}/historical", params=params)
         if response.status_code == 200:
             return response.json()
@@ -55,10 +55,11 @@ def get_parent_series_data(parent_sku: str, limit: int = 52) -> Optional[Dict]:
         print(f"Error getting series data: {e}")
     return None
 
-def get_parent_summary(parent_sku: str) -> Optional[Dict]:
+def get_parent_summary(parent_sku: str, include_prebook: bool = True) -> Optional[Dict]:
     """Get summary data for a parent SKU."""
     try:
-        response = requests.get(f"{API_BASE_URL}/parent-sku/{parent_sku}/summary")
+        params = {"include_prebook": include_prebook}
+        response = requests.get(f"{API_BASE_URL}/parent-sku/{parent_sku}/summary", params=params)
         if response.status_code == 200:
             return response.json()
         else:
@@ -67,13 +68,14 @@ def get_parent_summary(parent_sku: str) -> Optional[Dict]:
         print(f"Error getting summary data: {e}")
     return None
 
-def generate_parent_forecast(parent_sku: str, horizon: int = 13, model: str = "auto") -> Optional[Dict]:
+def generate_parent_forecast(parent_sku: str, horizon: int = 13, model: str = "auto", include_prebook: bool = True) -> Optional[Dict]:
     """Generate forecast for a parent SKU."""
     try:
         endpoint = f"{API_BASE_URL}/parent-sku/{parent_sku}/forecast"
         params = {
             "horizon": horizon,
-            "model": model
+            "model": model,
+            "include_prebook": include_prebook
         }
         
         response = requests.post(endpoint, params=params)
@@ -326,6 +328,15 @@ def main():
         }.get(x, x)
     )
     
+    # Sales type filters
+    st.sidebar.markdown("### 🎯 Sales Type Filters")
+    
+    include_prebook = st.sidebar.checkbox(
+        "Include Pre-book Sales",
+        value=True,
+        help="Pre-book sales are advance orders that are married to production 1:1"
+    )
+    
     # Model descriptions
     st.sidebar.markdown("### 📚 Model Descriptions")
     model_descriptions = {
@@ -346,12 +357,13 @@ def main():
         
         with st.spinner("Loading data..."):
             # Get summary data (all time totals)
-            summary_data = get_parent_summary(selected_parent_sku)
+            summary_data = get_parent_summary(selected_parent_sku, include_prebook)
             
             # Get historical data (recent 52 weeks for chart)
             series_data = get_parent_series_data(
                 selected_parent_sku, 
-                limit=52
+                limit=52,
+                include_prebook=include_prebook
             )
         
         if not summary_data or not series_data:
@@ -362,7 +374,8 @@ def main():
             forecast_data = generate_parent_forecast(
                 selected_parent_sku,
                 horizon,
-                model
+                model,
+                include_prebook
             )
         
         if not forecast_data:

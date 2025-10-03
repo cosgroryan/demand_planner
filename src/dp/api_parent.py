@@ -87,31 +87,43 @@ async def get_parent_skus():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/parent-sku/{parent_sku}/summary", response_model=ParentSKUResponse)
-async def get_parent_sku_summary(parent_sku: str):
-    """Get summary information for a parent SKU."""
+async def get_parent_sku_summary(
+    parent_sku: str,
+    include_prebook: bool = Query(True, description="Include pre-book sales")
+):
+    """Get summary information for a parent SKU with configurable pre-book filtering."""
     try:
-        series_data = load_aggregated_series(["SKU"], "W", use_forecast_sku=True)
+        # Load raw sales data for consistent calculations
+        raw_data = pl.read_parquet("data/processed/sales_clean.parquet")
         
-        # Find all SKUs that start with the parent SKU
-        matching_skus = series_data.filter(
-            pl.col("SKU").str.starts_with(parent_sku)
-        )
+        # Filter for parent SKU
+        parent_data = raw_data.filter(pl.col("SKU_Parent") == parent_sku)
         
-        if matching_skus.is_empty():
+        if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No SKUs found for parent: {parent_sku}"
+                detail=f"No data found for parent SKU: {parent_sku}"
             )
         
-        # Calculate summary statistics
-        total_skus = matching_skus["SKU"].n_unique()
-        total_units = matching_skus["units"].sum()
-        total_sales = matching_skus["net_sales"].sum()
+        # Apply pre-book filtering
+        if not include_prebook:
+            parent_data = parent_data.filter(pl.col("Order Type") != "Prebook")
+        
+        if parent_data.is_empty():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No sales data found for parent SKU: {parent_sku} with current filters"
+            )
+        
+        # Calculate summary statistics from filtered data
+        total_skus = parent_data["SKU"].n_unique()
+        total_units = parent_data["units"].sum()
+        total_sales = parent_data["Amount (Net)"].sum()
         avg_selling_price = total_sales / total_units if total_units > 0 else 0.0
         
         # Get date range
-        min_date = matching_skus["period"].min()
-        max_date = matching_skus["period"].max()
+        min_date = parent_data["Date"].min()
+        max_date = parent_data["Date"].max()
         
         return ParentSKUResponse(
             parent_sku=parent_sku,
@@ -134,28 +146,40 @@ async def get_parent_sku_summary(parent_sku: str):
 @app.get("/parent-sku/{parent_sku}/historical", response_model=HistoricalDataResponse)
 async def get_parent_sku_historical(
     parent_sku: str,
-    limit: int = Query(52, ge=1, le=200, description="Number of recent periods to return")
+    limit: int = Query(52, ge=1, le=200, description="Number of recent periods to return"),
+    include_prebook: bool = Query(True, description="Include pre-book sales")
 ):
-    """Get historical data for a parent SKU (aggregated across all child SKUs)."""
+    """Get historical data for a parent SKU with configurable pre-book filtering."""
     try:
-        series_data = load_aggregated_series(["SKU"], "W", use_forecast_sku=True)
+        # Load raw sales data for consistent calculations
+        raw_data = pl.read_parquet("data/processed/sales_clean.parquet")
         
-        # Find all SKUs that start with the parent SKU
-        matching_skus = series_data.filter(
-            pl.col("SKU").str.starts_with(parent_sku)
-        )
+        # Filter for parent SKU
+        parent_data = raw_data.filter(pl.col("SKU_Parent") == parent_sku)
         
-        if matching_skus.is_empty():
+        if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No SKUs found for parent: {parent_sku}"
+                detail=f"No data found for parent SKU: {parent_sku}"
             )
         
-        # Aggregate data across all matching SKUs by period
-        aggregated_data = matching_skus.group_by("period").agg([
+        # Apply pre-book filtering
+        if not include_prebook:
+            parent_data = parent_data.filter(pl.col("Order Type") != "Prebook")
+        
+        if parent_data.is_empty():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No sales data found for parent SKU: {parent_sku} with current filters"
+            )
+        
+        # Create weekly aggregation from filtered data
+        aggregated_data = parent_data.with_columns([
+            pl.col("Date").dt.truncate("1w").alias("period")
+        ]).group_by("period").agg([
             pl.col("units").sum().alias("units"),
-            pl.col("net_sales").sum().alias("net_sales"),
-            pl.col("transactions").sum().alias("transactions")
+            pl.col("Amount (Net)").sum().alias("net_sales"),
+            pl.col("units").count().alias("transactions")
         ]).sort("period").tail(limit)
         
         # Calculate average selling price for each period
@@ -182,31 +206,45 @@ async def get_parent_sku_historical(
 async def generate_parent_sku_forecast(
     parent_sku: str,
     horizon: int = Query(13, ge=1, le=52, description="Forecast horizon in weeks"),
-    model: str = Query("auto", description="Model type (auto, random_forest, gradient_boosting, arima, etc.)")
+    model: str = Query("auto", description="Model type (auto, random_forest, gradient_boosting, arima, etc.)"),
+    include_prebook: bool = Query(True, description="Include pre-book sales")
 ):
-    """Generate ML forecast for a parent SKU."""
+    """Generate ML forecast for a parent SKU with configurable pre-book filtering."""
     try:
-        logger.info(f"Starting forecast for parent SKU: {parent_sku}")
-        series_data = load_aggregated_series(["SKU"], "W", use_forecast_sku=True)
-        logger.info(f"Loaded series data: {series_data.shape}")
+        logger.info(f"Starting forecast for parent SKU: {parent_sku}, include_prebook: {include_prebook}")
         
-        # Find all SKUs that start with the parent SKU
-        matching_skus = series_data.filter(
-            pl.col("SKU").str.starts_with(parent_sku)
-        )
-        logger.info(f"Found {len(matching_skus)} matching SKUs")
+        # Load raw sales data for consistent calculations
+        raw_data = pl.read_parquet("data/processed/sales_clean.parquet")
+        logger.info(f"Loaded raw data: {raw_data.shape}")
         
-        if matching_skus.is_empty():
+        # Filter for parent SKU
+        parent_data = raw_data.filter(pl.col("SKU_Parent") == parent_sku)
+        logger.info(f"Found {len(parent_data)} records for parent SKU")
+        
+        if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No SKUs found for parent: {parent_sku}"
+                detail=f"No data found for parent SKU: {parent_sku}"
             )
         
-        # Aggregate data across all matching SKUs by period
-        aggregated_data = matching_skus.group_by("period").agg([
+        # Apply pre-book filtering
+        if not include_prebook:
+            parent_data = parent_data.filter(pl.col("Order Type") != "Prebook")
+            logger.info(f"After pre-book filtering: {len(parent_data)} records")
+        
+        if parent_data.is_empty():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No sales data found for parent SKU: {parent_sku} with current filters"
+            )
+        
+        # Create weekly aggregation from filtered data
+        aggregated_data = parent_data.with_columns([
+            pl.col("Date").dt.truncate("1w").alias("period")
+        ]).group_by("period").agg([
             pl.col("units").sum().alias("units"),
-            pl.col("net_sales").sum().alias("net_sales"),
-            pl.col("transactions").sum().alias("transactions")
+            pl.col("Amount (Net)").sum().alias("net_sales"),
+            pl.col("units").count().alias("transactions")
         ]).sort("period")
         logger.info(f"Aggregated data shape: {aggregated_data.shape}")
         

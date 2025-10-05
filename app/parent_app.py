@@ -398,7 +398,7 @@ def main():
         # Forecast chart
         st.markdown("### 📈 Forecast Visualization")
         fig = create_parent_forecast_chart(series_data, forecast_data)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, config={"displayModeBar": True, "responsive": True})
         
         # Forecast table
         st.markdown("### 📋 Forecast Details")

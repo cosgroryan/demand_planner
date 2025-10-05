@@ -3,6 +3,7 @@ import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import logging
+import re
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,67 @@ from .aggregate import load_aggregated_series
 from .models.forecast_api import DemandForecaster
 
 logger = logging.getLogger(__name__)
+
+def get_sku_matching_pattern(sku_input: str) -> str:
+    """
+    Determine the SKU matching pattern based on input precision.
+    
+    Args:
+        sku_input: User input (e.g., "100275", "100275-123", "100275-123-456")
+    
+    Returns:
+        Pattern for matching SKUs (e.g., "100275-*-*", "100275-123-*", "100275-123-456")
+    """
+    # Remove any whitespace
+    sku_input = sku_input.strip()
+    
+    # Split by dashes to get components
+    parts = sku_input.split('-')
+    
+    if len(parts) == 1:
+        # Parent only: "100275" -> "100275-*-*"
+        return f"{parts[0]}-*-*"
+    elif len(parts) == 2:
+        # Parent + Style: "100275-123" -> "100275-123-*"
+        return f"{parts[0]}-{parts[1]}-*"
+    elif len(parts) == 3:
+        # Full SKU: "100275-123-456" -> "100275-123-456"
+        return sku_input
+    else:
+        # Invalid format, return as-is
+        return sku_input
+
+def filter_skus_by_pattern(df: pl.DataFrame, sku_pattern: str) -> pl.DataFrame:
+    """
+    Filter DataFrame by SKU pattern using wildcard matching.
+    
+    Args:
+        df: DataFrame with SKU column
+        sku_pattern: Pattern like "100275-*-*" or "100275-123-*" or "100275-123-456"
+    
+    Returns:
+        Filtered DataFrame
+    """
+    if sku_pattern.endswith('-*-*'):
+        # Parent only: match all SKUs starting with parent
+        parent = sku_pattern.replace('-*-*', '')
+        return df.filter(pl.col("SKU").str.starts_with(parent))
+    elif sku_pattern.endswith('-*'):
+        # Parent + Style: match SKUs starting with parent-style
+        prefix = sku_pattern.replace('-*', '')
+        return df.filter(pl.col("SKU").str.starts_with(prefix))
+    else:
+        # Check if this is a 3-part SKU without size (should wildcard to all sizes)
+        parts = sku_pattern.split('-')
+        if len(parts) == 3 and parts[2].isdigit():
+            # This is parent-style-color without size, wildcard to all sizes
+            return df.filter(pl.col("SKU").str.starts_with(sku_pattern))
+        elif len(parts) == 4:
+            # This is a full SKU with size (parent-style-color-size), exact match
+            return df.filter(pl.col("SKU") == sku_pattern)
+        else:
+            # Exact match for any other format
+            return df.filter(pl.col("SKU") == sku_pattern)
 
 app = FastAPI(
     title="Demand Planning API - Parent SKU Focus",
@@ -36,7 +98,7 @@ class HealthResponse(BaseModel):
     version: str
 
 class ParentSKUResponse(BaseModel):
-    parent_sku: str
+    sku_input: str
     total_skus: int
     total_units: float
     total_sales: float
@@ -44,7 +106,7 @@ class ParentSKUResponse(BaseModel):
     date_range: Dict[str, str]
 
 class HistoricalDataResponse(BaseModel):
-    parent_sku: str
+    sku_input: str
     periods: List[str]
     units: List[float]
     net_sales: List[float]
@@ -52,7 +114,7 @@ class HistoricalDataResponse(BaseModel):
     transactions: List[int]
 
 class ForecastResponse(BaseModel):
-    parent_sku: str
+    sku_input: str
     model_used: str
     forecast_periods: List[str]
     forecast_units: List[float]
@@ -72,37 +134,38 @@ async def health_check():
     )
 
 @app.get("/parent-skus", response_model=List[str])
-async def get_parent_skus():
+async def get_sku_inputs():
     """Get list of all parent SKUs."""
     try:
         series_data = load_aggregated_series(["SKU"], "W", use_forecast_sku=True)
         
         # Extract parent SKUs (first 6 digits)
-        parent_skus = series_data["SKU"].str.slice(0, 6).unique().sort().to_list()
+        sku_inputs = series_data["SKU"].str.slice(0, 6).unique().sort().to_list()
         
-        return parent_skus
+        return sku_inputs
         
     except Exception as e:
         logger.error(f"Error getting parent SKUs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/parent-sku/{parent_sku}/summary", response_model=ParentSKUResponse)
-async def get_parent_sku_summary(
-    parent_sku: str,
+@app.get("/parent-sku/{sku_input}/summary", response_model=ParentSKUResponse)
+async def get_sku_input_summary(
+    sku_input: str,
     include_prebook: bool = Query(True, description="Include pre-book sales")
 ):
-    """Get summary information for a parent SKU with configurable pre-book filtering."""
+    """Get summary information for a SKU with wildcard matching and configurable pre-book filtering."""
     try:
         # Load raw sales data for consistent calculations
-        raw_data = pl.read_parquet("data/processed/sales_clean.parquet")
+        raw_data = pl.read_parquet("data/processed/sales_clean_clean.parquet")
         
-        # Filter for parent SKU
-        parent_data = raw_data.filter(pl.col("SKU_Parent") == parent_sku)
+        # Get SKU matching pattern and filter data
+        sku_pattern = get_sku_matching_pattern(sku_input)
+        parent_data = filter_skus_by_pattern(raw_data, sku_pattern)
         
         if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No data found for parent SKU: {parent_sku}"
+                detail=f"No data found for SKU pattern: {sku_pattern}"
             )
         
         # Apply pre-book filtering
@@ -112,7 +175,7 @@ async def get_parent_sku_summary(
         if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No sales data found for parent SKU: {parent_sku} with current filters"
+                detail=f"No sales data found for parent SKU: {sku_input} with current filters"
             )
         
         # Calculate summary statistics from filtered data
@@ -126,7 +189,7 @@ async def get_parent_sku_summary(
         max_date = parent_data["Date"].max()
         
         return ParentSKUResponse(
-            parent_sku=parent_sku,
+            sku_input=sku_input,
             total_skus=total_skus,
             total_units=total_units,
             total_sales=total_sales,
@@ -140,27 +203,28 @@ async def get_parent_sku_summary(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting parent SKU summary for {parent_sku}: {e}")
+        logger.error(f"Error getting parent SKU summary for {sku_input}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/parent-sku/{parent_sku}/historical", response_model=HistoricalDataResponse)
-async def get_parent_sku_historical(
-    parent_sku: str,
+@app.get("/parent-sku/{sku_input}/historical", response_model=HistoricalDataResponse)
+async def get_sku_input_historical(
+    sku_input: str,
     limit: int = Query(52, ge=1, le=200, description="Number of recent periods to return"),
     include_prebook: bool = Query(True, description="Include pre-book sales")
 ):
-    """Get historical data for a parent SKU with configurable pre-book filtering."""
+    """Get historical data for a SKU with wildcard matching and configurable pre-book filtering."""
     try:
         # Load raw sales data for consistent calculations
-        raw_data = pl.read_parquet("data/processed/sales_clean.parquet")
+        raw_data = pl.read_parquet("data/processed/sales_clean_clean.parquet")
         
-        # Filter for parent SKU
-        parent_data = raw_data.filter(pl.col("SKU_Parent") == parent_sku)
+        # Get SKU matching pattern and filter data
+        sku_pattern = get_sku_matching_pattern(sku_input)
+        parent_data = filter_skus_by_pattern(raw_data, sku_pattern)
         
         if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No data found for parent SKU: {parent_sku}"
+                detail=f"No data found for parent SKU: {sku_input}"
             )
         
         # Apply pre-book filtering
@@ -170,7 +234,7 @@ async def get_parent_sku_historical(
         if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No sales data found for parent SKU: {parent_sku} with current filters"
+                detail=f"No sales data found for parent SKU: {sku_input} with current filters"
             )
         
         # Create weekly aggregation from filtered data
@@ -188,7 +252,7 @@ async def get_parent_sku_historical(
         ]).fill_null(0.0)
         
         return HistoricalDataResponse(
-            parent_sku=parent_sku,
+            sku_input=sku_input,
             periods=[str(p) for p in aggregated_data["period"].to_list()],
             units=aggregated_data["units"].to_list(),
             net_sales=aggregated_data["net_sales"].to_list(),
@@ -199,32 +263,33 @@ async def get_parent_sku_historical(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting historical data for parent SKU {parent_sku}: {e}")
+        logger.error(f"Error getting historical data for parent SKU {sku_input}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/parent-sku/{parent_sku}/forecast", response_model=ForecastResponse)
-async def generate_parent_sku_forecast(
-    parent_sku: str,
+@app.post("/parent-sku/{sku_input}/forecast", response_model=ForecastResponse)
+async def generate_sku_input_forecast(
+    sku_input: str,
     horizon: int = Query(13, ge=1, le=52, description="Forecast horizon in weeks"),
     model: str = Query("auto", description="Model type (auto, random_forest, gradient_boosting, arima, etc.)"),
     include_prebook: bool = Query(True, description="Include pre-book sales")
 ):
-    """Generate ML forecast for a parent SKU with configurable pre-book filtering."""
+    """Generate ML forecast for a SKU with wildcard matching and configurable pre-book filtering."""
     try:
-        logger.info(f"Starting forecast for parent SKU: {parent_sku}, include_prebook: {include_prebook}")
+        logger.info(f"Starting forecast for SKU pattern: {sku_input}, include_prebook: {include_prebook}")
         
         # Load raw sales data for consistent calculations
-        raw_data = pl.read_parquet("data/processed/sales_clean.parquet")
+        raw_data = pl.read_parquet("data/processed/sales_clean_clean.parquet")
         logger.info(f"Loaded raw data: {raw_data.shape}")
         
-        # Filter for parent SKU
-        parent_data = raw_data.filter(pl.col("SKU_Parent") == parent_sku)
-        logger.info(f"Found {len(parent_data)} records for parent SKU")
+        # Get SKU matching pattern and filter data
+        sku_pattern = get_sku_matching_pattern(sku_input)
+        parent_data = filter_skus_by_pattern(raw_data, sku_pattern)
+        logger.info(f"Found {len(parent_data)} records for SKU pattern: {sku_pattern}")
         
         if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No data found for parent SKU: {parent_sku}"
+                detail=f"No data found for parent SKU: {sku_input}"
             )
         
         # Apply pre-book filtering
@@ -235,7 +300,7 @@ async def generate_parent_sku_forecast(
         if parent_data.is_empty():
             raise HTTPException(
                 status_code=404, 
-                detail=f"No sales data found for parent SKU: {parent_sku} with current filters"
+                detail=f"No sales data found for parent SKU: {sku_input} with current filters"
             )
         
         # Create weekly aggregation from filtered data
@@ -257,7 +322,7 @@ async def generate_parent_sku_forecast(
         # Generate forecast
         logger.info(f"Starting forecast generation with model: {model}")
         forecast_result = forecaster.forecast(
-            series_id=f"{parent_sku}_parent",
+            series_id=f"{sku_input}_parent",
             series_data=aggregated_data,
             horizon=horizon,
             model=model
@@ -284,7 +349,7 @@ async def generate_parent_sku_forecast(
             confidence_intervals = {"units": confidence_intervals}
         
         return ForecastResponse(
-            parent_sku=parent_sku,
+            sku_input=sku_input,
             model_used=forecast_result["model_used"],
             forecast_periods=forecast_periods,
             forecast_units=forecast_units,
@@ -298,7 +363,7 @@ async def generate_parent_sku_forecast(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error generating forecast for parent SKU {parent_sku}: {e}")
+        logger.error(f"Error generating forecast for parent SKU {sku_input}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

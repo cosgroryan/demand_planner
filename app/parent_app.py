@@ -162,7 +162,7 @@ def create_parent_forecast_chart(series_data: Dict, forecast_data: Dict) -> go.F
     
     # Update layout
     fig.update_layout(
-        title=f"Parent SKU {series_data['parent_sku']} - Demand Forecast",
+        title=f"SKU {series_data['sku_input']} - Demand Forecast",
         height=600,
         showlegend=True
     )
@@ -238,12 +238,14 @@ def main():
         st.error("No parent SKUs found. Please ensure data has been processed.")
         st.stop()
     
-    # Parent SKU Selection
-    st.sidebar.markdown("### 🔍 Parent SKU Selection")
-    st.sidebar.markdown("**Format**: `100275` (Parent SKU only)")
-    st.sidebar.markdown("**The system will aggregate all child SKUs under this parent.**")
+    # SKU Selection
+    st.sidebar.markdown("### 🔍 SKU Selection")
+    st.sidebar.markdown("**Supported formats:**")
+    st.sidebar.markdown("- `100275` → All SKUs with parent 100275")
+    st.sidebar.markdown("- `100275-123` → All SKUs with parent 100275 and style 123")
+    st.sidebar.markdown("- `100275-123-456` → Specific SKU")
     
-    # Parent SKU input method selection
+    # SKU input method selection
     input_method = st.sidebar.radio(
         "Choose input method:",
         ["📝 Manual Entry", "📋 Select from List"],
@@ -253,10 +255,10 @@ def main():
     if input_method == "📝 Manual Entry":
         # Manual text input
         selected_parent_sku = st.sidebar.text_input(
-            "Enter Parent SKU",
+            "Enter SKU",
             value=st.session_state.get("manual_sku", ""),
-            placeholder="e.g., 100275",
-            help="Enter a parent SKU manually (6 digits)",
+            placeholder="e.g., 100275, 100275-123, 100275-123-456",
+            help="Enter a SKU with any level of precision",
             key="manual_sku_input"
         )
         
@@ -265,10 +267,14 @@ def main():
             st.session_state.manual_sku = selected_parent_sku
             
         # Validate format
-        if selected_parent_sku and not selected_parent_sku.isdigit():
-            st.sidebar.warning("⚠️ Parent SKU should be numeric (e.g., 100275)")
-        elif selected_parent_sku and len(selected_parent_sku) != 6:
-            st.sidebar.warning("⚠️ Parent SKU should be 6 digits (e.g., 100275)")
+        if selected_parent_sku:
+            parts = selected_parent_sku.split('-')
+            if len(parts) == 1 and not parts[0].isdigit():
+                st.sidebar.warning("⚠️ Parent SKU should be numeric (e.g., 100275)")
+            elif len(parts) == 1 and len(parts[0]) != 6:
+                st.sidebar.warning("⚠️ Parent SKU should be 6 digits (e.g., 100275)")
+            elif len(parts) > 1 and not all(part.isdigit() for part in parts):
+                st.sidebar.warning("⚠️ All SKU parts should be numeric (e.g., 100275-123-456)")
         
         # Show popular SKUs for quick selection
         if not selected_parent_sku:
@@ -292,9 +298,9 @@ def main():
         if selected_parent_sku:
             st.session_state.selected_sku_index = available_parent_skus.index(selected_parent_sku)
     
-    # Display parent SKU info
+    # Display SKU info
     if selected_parent_sku:
-        st.sidebar.success(f"Selected Parent SKU: {selected_parent_sku}")
+        st.sidebar.success(f"Selected SKU: {selected_parent_sku}")
         
         # Show quick stats if available
         if selected_parent_sku in available_parent_skus:

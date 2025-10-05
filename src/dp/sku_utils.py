@@ -247,22 +247,51 @@ def extract_sku_components(df: pl.DataFrame) -> pl.DataFrame:
     Returns:
         DataFrame with parsed SKU components
     """
-    # Reconstruct proper SKUs
-    df_with_sku = df.with_columns([
-        pl.struct([
-            pl.col("Style"),
-            pl.col("Colour"), 
-            pl.col("Gender"),
-            pl.col("Internal ID"),
-            pl.col("StyleColourCode")
-        ]).map_elements(
-            lambda x: reconstruct_sku_from_fields(
-                x["Style"], x["Colour"], x["Gender"], 
-                x["Internal ID"], x["StyleColourCode"]
-            ),
-            return_dtype=pl.Utf8
-        ).alias("SKU_Reconstructed")
-    ])
+    # Use the original SKU field directly if it exists and looks valid
+    if "SKU" in df.columns:
+        # Check if SKUs look like they already have size information
+        sample_skus = df.select("SKU").head(10).to_series().to_list()
+        has_sizes = any(sku and "-" in str(sku) and len(str(sku).split("-")) == 4 for sku in sample_skus)
+        
+        if has_sizes:
+            # Use original SKU field directly
+            df_with_sku = df.with_columns([
+                pl.col("SKU").alias("SKU_Reconstructed")
+            ])
+        else:
+            # Reconstruct SKUs from other fields
+            df_with_sku = df.with_columns([
+                pl.struct([
+                    pl.col("Style"),
+                    pl.col("Colour"), 
+                    pl.col("Gender"),
+                    pl.col("Internal ID"),
+                    pl.col("StyleColourCode")
+                ]).map_elements(
+                    lambda x: reconstruct_sku_from_fields(
+                        x["Style"], x["Colour"], x["Gender"], 
+                        x["Internal ID"], x["StyleColourCode"]
+                    ),
+                    return_dtype=pl.Utf8
+                ).alias("SKU_Reconstructed")
+            ])
+    else:
+        # No SKU column, reconstruct from other fields
+        df_with_sku = df.with_columns([
+            pl.struct([
+                pl.col("Style"),
+                pl.col("Colour"), 
+                pl.col("Gender"),
+                pl.col("Internal ID"),
+                pl.col("StyleColourCode")
+            ]).map_elements(
+                lambda x: reconstruct_sku_from_fields(
+                    x["Style"], x["Colour"], x["Gender"], 
+                    x["Internal ID"], x["StyleColourCode"]
+                ),
+                return_dtype=pl.Utf8
+            ).alias("SKU_Reconstructed")
+        ])
     
     # Parse SKU components
     df_with_components = df_with_sku.with_columns([
